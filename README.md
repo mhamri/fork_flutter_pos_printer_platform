@@ -69,6 +69,8 @@ if select bluetooth you can send optional params
 - isBle -> allow to connect with bluetooth that supports this technology
 - autoconnect -> allow to reconnect when state of device is None
 
+On Android, USB `connect` returns only after Android says whether the app may use the printer. The first time, Android shows a permission dialog and `connect` waits for the tap, at most `UsbPrinterConnector.instance.permissionTimeout` (60 s). A refused or unanswered dialog returns false.
+
 ## iOS
 Allow to connect bluetooth (BLE) and network devices
 

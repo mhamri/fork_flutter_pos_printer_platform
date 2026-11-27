@@ -223,9 +223,11 @@ class BluetoothPrinterConnector implements PrinterConnector<BluetoothPrinterInpu
 
   @override
   Future<bool> disconnect({int? delayMs}) async {
-    if (Platform.isAndroid)
-      await flutterPrinterChannel.invokeMethod('disconnect');
-    else if (Platform.isIOS) await iosChannel.invokeMethod('disconnect');
+    if (Platform.isAndroid) return await flutterPrinterChannel.invokeMethod<bool>('disconnect') ?? false;
+    if (Platform.isIOS) {
+      await iosChannel.invokeMethod('disconnect');
+      return true;
+    }
     return false;
   }
 

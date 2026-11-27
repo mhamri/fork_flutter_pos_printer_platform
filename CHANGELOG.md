@@ -3,6 +3,10 @@
 * Breaking: `PrinterConnector.send` and `PrinterManager.send` return a `PrintResult` (`PrintConfirmed`, `PrintUnconfirmed` or `PrintFailed`) instead of a `bool`. See README.md, "Print results".
 * Network: `TcpPrinterConnector.print` opens a socket for each job and asks the printer for its status after the job. The shared socket is gone. See README.md, "Network printing".
 * Android USB: the send waits for every `bulkTransfer`, checks how many bytes each one took, and sends the right length for the last piece. It no longer reports success before the write.
+* Android USB: `connect` answers only after Android says whether the app may use the printer. It waits for the permission dialog, at most `UsbPrinterConnector.permissionTimeout` (60 s). Before, it returned true as soon as it asked, so the first job after the dialog failed.
+* Android USB: the "connected" toast no longer crashes a send that runs on the worker thread.
+* Android: the plugin compiles against SDK 36 with Java 11, so apps that do not raise the plugin's `compileSdk` themselves build again.
+* Bluetooth: `disconnect` returns the platform's answer instead of always `false`.
 * Android Bluetooth Classic: a failed write fails the job instead of showing a toast.
 * Android BLE: the job goes in pieces that fit the MTU, and each piece waits for the printer.
 * Android: sends run on a worker thread, not the UI thread.

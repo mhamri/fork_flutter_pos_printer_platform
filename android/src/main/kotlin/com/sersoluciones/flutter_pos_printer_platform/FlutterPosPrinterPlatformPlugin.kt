@@ -327,13 +327,9 @@ class FlutterPosPrinterPlatformPlugin : FlutterPlugin, MethodCallHandler, Plugin
     }
 
     private fun connectPrinter(vendorId: Int?, productId: Int?, result: Result) {
-        if (vendorId == null || productId == null) return
+        if (vendorId == null || productId == null) return result.success(false)
         adapter.setHandler(usbHandler)
-        if (!adapter.selectDevice(vendorId, productId)) {
-            result.success(false)
-        } else {
-            result.success(true)
-        }
+        adapter.selectDevice(vendorId, productId) { granted -> result.success(granted) }
     }
 
     private fun closeConn(result: Result) {

@@ -145,7 +145,8 @@ class UsbPrinterConnector implements PrinterConnector<UsbPrinterInput> {
   Future<bool> _connect({UsbPrinterInput? model}) async {
     if (Platform.isAndroid) {
       Map<String, dynamic> params = {"vendor": int.parse(model?.vendorId ?? vendorId), "product": int.parse(model?.productId ?? productId)};
-      return await flutterPrinterChannel.invokeMethod('connectPrinter', params);
+      final granted = flutterPrinterChannel.invokeMethod<bool>('connectPrinter', params).then((value) => value ?? false);
+      return await granted.timeout(permissionTimeout, onTimeout: () => false);
     } else if (Platform.isWindows) {
       Map<String, dynamic> params = {"name": model?.name ?? name};
       return await flutterPrinterChannel.invokeMethod('connectPrinter', params) == 1 ? true : false;
@@ -176,6 +177,7 @@ class UsbPrinterConnector implements PrinterConnector<UsbPrinterInput> {
     }
   }
 
+  Duration permissionTimeout = const Duration(seconds: 60);
   Duration statusTimeout = const Duration(seconds: 2);
 
   // See README.md, "Print results".
