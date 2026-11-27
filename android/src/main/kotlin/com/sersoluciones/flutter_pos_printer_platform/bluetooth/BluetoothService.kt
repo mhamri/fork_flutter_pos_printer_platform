@@ -9,6 +9,7 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import com.sersoluciones.flutter_pos_printer_platform.PrintOutcome
 import com.sersoluciones.flutter_pos_printer_platform.models.LocalBluetoothDevice
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodChannel.Result
@@ -198,19 +199,9 @@ class BluetoothService(private var bluetoothHandler: Handler?) {
     ////////////////////////////////////////////////////////////////////////////////////////////////
     // Comandos de envio por Bluetooth
     ////////////////////////////////////////////////////////////////////////////////////////////////
-    fun sendData(data: String) {
-        if (bluetoothConnection?.state == BluetoothConstants.STATE_CONNECTED) {
-            bluetoothConnection?.write(data.toByteArray())
-        }
-    }
-
-    fun sendDataByte(bytes: ByteArray?): Boolean {
-        if (bluetoothConnection?.state == BluetoothConstants.STATE_CONNECTED) {
-            bluetoothConnection?.write(bytes!!)
-            return true
-        }
-        return false
-    }
+    fun sendDataByte(bytes: ByteArray, confirmTimeoutMs: Long): Map<String, Any?> =
+        bluetoothConnection?.send(bytes, confirmTimeoutMs)
+            ?: PrintOutcome.failed("Bluetooth printer is not connected")
 
     @Suppress("unused")
     private fun setUpBluetooth() {

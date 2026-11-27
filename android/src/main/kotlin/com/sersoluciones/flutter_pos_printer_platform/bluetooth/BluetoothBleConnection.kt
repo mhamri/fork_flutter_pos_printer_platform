@@ -6,10 +6,13 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.util.Log
+import com.sersoluciones.flutter_pos_printer_platform.PrintOutcome
 import com.sersoluciones.flutter_pos_printer_platform.bluetooth.SampleGattAttributes.Companion.CLIENT_CHARACTERISTIC_CONFIG
 import com.sersoluciones.flutter_pos_printer_platform.bluetooth.SampleGattAttributes.Companion.HEART_RATE_MEASUREMENT
 import io.flutter.plugin.common.MethodChannel
 import java.util.*
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
 
 private const val TAG = "BluetoothBleConnection"
 
@@ -20,7 +23,14 @@ class BluetoothBleConnection(
 ) : IBluetoothConnection {
 
     private var bluetoothGatt: BluetoothGatt? = null
-    private var mCharacteristic: BluetoothGattCharacteristic? = null
+
+    @Volatile
+    private var writeCharacteristic: BluetoothGattCharacteristic? = null
+
+    @Volatile
+    private var payloadSize = DEFAULT_PAYLOAD_SIZE
+    private val writeResults = LinkedBlockingQueue<Int>()
+    private val writeLock = Any()
     private var mState: Int = BluetoothConstants.STATE_NONE
 
     /**
@@ -101,24 +111,47 @@ class BluetoothBleConnection(
         }
     }
 
-    override fun write(out: ByteArray?) {
-        mCharacteristic?.let { characteristic ->
-//            val writeType = when {
-//                characteristic.isWritable() -> BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-//                characteristic.isWritableWithoutResponse() -> {
-//                    BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-//                }
-//                else -> error("Characteristic ${characteristic.uuid} cannot be written to")
-//            }
+    // See README.md, "Print results". A BLE write carries at most MTU - 3 bytes, so the job goes in pieces.
+    override fun send(bytes: ByteArray, confirmTimeoutMs: Long): Map<String, Any?> {
+        val gatt = bluetoothGatt
+        if (mState != BluetoothConstants.STATE_CONNECTED || gatt == null) {
+            return PrintOutcome.failed("BLE printer is not connected")
+        }
+        val characteristic = writeCharacteristic
+            ?: return PrintOutcome.failed("BLE printer has no characteristic the app can write to")
+        val withResponse = characteristic.properties and BluetoothGattCharacteristic.PROPERTY_WRITE != 0
+        characteristic.writeType =
+            if (withResponse) BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+            else BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
 
-            bluetoothGatt?.let { gatt ->
-                characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-                characteristic.value = out
-                gatt.writeCharacteristic(mCharacteristic)
-                // Share the sent message back to the UI Activity
-                mHandler.obtainMessage(BluetoothConstants.MESSAGE_WRITE, -1, -1, out)
-                    .sendToTarget()
-            } ?: error("Not connected to a BLE device!")
+        synchronized(writeLock) {
+            var offset = 0
+            while (offset < bytes.size) {
+                val end = minOf(offset + payloadSize, bytes.size)
+                writeResults.clear()
+                characteristic.value = bytes.copyOfRange(offset, end)
+                if (!writeWhenGattIsFree(gatt, characteristic)) {
+                    return PrintOutcome.failed("BLE printer refused the job at byte $offset of ${bytes.size}")
+                }
+                val status = writeResults.poll(PIECE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                    ?: return PrintOutcome.failed("BLE printer did not answer at byte $offset of ${bytes.size}")
+                if (status != BluetoothGatt.GATT_SUCCESS) {
+                    return PrintOutcome.failed("BLE printer rejected the job at byte $offset of ${bytes.size}, GATT status $status")
+                }
+                offset = end
+            }
+        }
+        return if (withResponse) PrintOutcome.delivered(null)
+        else PrintOutcome.sent(null, "BLE printer took every byte, but it cannot confirm writes")
+    }
+
+    // writeCharacteristic returns false while another GATT operation, such as a descriptor write, is still running.
+    private fun writeWhenGattIsFree(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic): Boolean {
+        val deadline = System.currentTimeMillis() + GATT_BUSY_TIMEOUT_MS
+        while (true) {
+            if (gatt.writeCharacteristic(characteristic)) return true
+            if (System.currentTimeMillis() >= deadline) return false
+            Thread.sleep(50)
         }
     }
 
@@ -147,8 +180,9 @@ class BluetoothBleConnection(
                     } else {
                         mHandler.obtainMessage(BluetoothConstants.MESSAGE_STATE_CHANGE, state, -1).sendToTarget()
                     }
-                    // Attempts to discover services after successful connection.
-                    bluetoothGatt?.discoverServices()
+                    payloadSize = DEFAULT_PAYLOAD_SIZE
+                    writeCharacteristic = null
+                    if (!gatt.requestMtu(REQUESTED_MTU)) gatt.discoverServices()
 
                 }
                 BluetoothProfile.STATE_CONNECTING -> {
@@ -169,6 +203,11 @@ class BluetoothBleConnection(
                     state = BluetoothConstants.STATE_NONE
                 }
             }
+        }
+
+        override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
+            if (status == BluetoothGatt.GATT_SUCCESS) payloadSize = mtu - 3
+            gatt.discoverServices()
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt?, status: Int) {
@@ -202,6 +241,7 @@ class BluetoothBleConnection(
             characteristic: BluetoothGattCharacteristic,
             status: Int
         ) {
+            writeResults.offer(status)
             with(characteristic) {
                 when (status) {
                     BluetoothGatt.GATT_SUCCESS -> {
@@ -236,6 +276,10 @@ class BluetoothBleConnection(
      */
     private fun displayGattServices(gattServices: List<BluetoothGattService>?) {
         if (gattServices == null) return
+        val characteristics = gattServices.flatMap { it.characteristics }
+        writeCharacteristic =
+            characteristics.firstOrNull { it.properties and BluetoothGattCharacteristic.PROPERTY_WRITE != 0 }
+                ?: characteristics.firstOrNull { it.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE != 0 }
         var uuid: String?
 
         // Loops through available GATT Services.
@@ -336,7 +380,6 @@ class BluetoothBleConnection(
             val descriptor: BluetoothGattDescriptor =
                 characteristic.getDescriptor(UUID.fromString(CLIENT_CHARACTERISTIC_CONFIG))
                     ?: return
-            mCharacteristic = characteristic
 //            Log.w(TAG, " *************** BluetoothGatt descriptor ${characteristic.uuid}")
             descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
             gatt.writeDescriptor(descriptor)
@@ -377,6 +420,11 @@ class BluetoothBleConnection(
 
         val UUID_HEART_RATE_MEASUREMENT: UUID =
             UUID.fromString(HEART_RATE_MEASUREMENT)
+
+        private const val DEFAULT_PAYLOAD_SIZE = 20
+        private const val REQUESTED_MTU = 247
+        private const val PIECE_TIMEOUT_MS = 5000L
+        private const val GATT_BUSY_TIMEOUT_MS = 2000L
 
     }
 }

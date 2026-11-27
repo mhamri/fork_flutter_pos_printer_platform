@@ -144,11 +144,53 @@ _connectDevice(PrinterDevice selectedPrinter, PrinterType type, {bool reconnect 
 
 ### send bytes to print
 ```dart
-    _sendBytesToPrint(List<int> bytes, PrinterType type) async { 
-      PrinterManager.instance.send(type: type, bytes: bytes);
-    }
-
+final result = await PrinterManager.instance.send(type: type, bytes: bytes);
+switch (result) {
+  case PrintConfirmed(:final problems):
+    // The printer has the job. `problems` names a cover open, no paper or an error.
+  case PrintUnconfirmed(:final reason):
+    // Every byte left the device, but the printer did not answer.
+  case PrintFailed(:final reason):
+    // The job did not reach the printer. Only this result is safe to send again.
+}
 ```
+
+## Print results
+
+Every `send` returns a `PrintResult`. It reports what the printer proved. It never decides a retry: the app does that.
+
+- `PrintConfirmed(problems)`: the printer has every byte of the job. `problems` holds what the printer reported in its status reply: `coverOpen`, `paperOut` or `error`. A printer with a problem keeps the job and prints it when the problem is fixed.
+- `PrintUnconfirmed(reason)`: every byte left the device, but the printer gave no proof that it read them. Sending the job again can print it twice.
+- `PrintFailed(reason)`: the job did not reach the printer, or only part of it did.
+
+`PrintResult.reachedPrinter` is false only for `PrintFailed`.
+
+The proof is the ESC/POS status request `DLE EOT 2` (bytes `10 04 02`), sent after the job. A printer reads its input in order, so its reply proves it read the whole job. A reply byte has the shape `byte & 0x93 == 0x12`. Bit 2 means the cover is open, bit 5 means the paper ran out, and bit 6 means an error. Automatic status back bytes and XON/XOFF bytes never have that shape.
+
+| Transport | `PrintConfirmed` | `PrintUnconfirmed` | `PrintFailed` |
+|---|---|---|---|
+| Network | Status reply, or the printer hangs up after it read the job | No answer within `confirmTimeout` (60 s), or the link drops after the whole job left | Cannot connect, flush timeout, or the link drops while sending |
+| Android USB | Every `bulkTransfer` took its whole piece. A status reply on the IN endpoint, within `statusTimeout` (2 s), adds problems | Never | Cannot open the device, or a `bulkTransfer` took less than its piece |
+| Android Bluetooth Classic | Status reply within `confirmTimeout` (30 s) | No status reply, or the link drops after the whole job left | Not connected, or a write throws |
+| Android BLE | Each piece was written with a response | The characteristic takes only writes with no response | Not connected, the GATT refused a piece, or a piece got no answer within 5 s |
+| iOS Bluetooth | Never | Always: the iOS SDK gives no answer | The platform call throws |
+| Windows USB | The print spooler took the job | Never | The spooler refused the job |
+
+Android sends run on one worker thread per transport, so a slow printer never blocks the UI thread.
+
+## Network printing
+
+`TcpPrinterConnector.print(printer, bytes)` opens a socket for one job and closes it when the job ends. Two jobs to two printers never share a socket. Use `print` instead of `connect` and `send`. `connect` and `send` still work, and call `print` for the printer `connect` chose.
+
+For each job, `print`:
+
+1. Connects. It tries `connectAttempts` times (3), with `retryPause` (0.5 s) between tries.
+2. Reads every byte the printer sends, so unread bytes cannot make the operating system reset the connection. Bytes that come before the job is sent are thrown away.
+3. Writes the job and waits until the operating system took every byte, at most `flushTimeout` (60 s).
+4. Sends the status request and closes its sending side. It waits for the status reply or for the printer to hang up, at most `confirmTimeout` (60 s).
+5. Destroys the socket.
+
+`probe(printer)` opens one connection, sends nothing, and closes it. It throws `TcpPrintException` when the printer cannot be reached.
 
 ## Troubleshooting
 

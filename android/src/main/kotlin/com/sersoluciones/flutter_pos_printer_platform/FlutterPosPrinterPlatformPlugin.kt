@@ -30,6 +30,8 @@ import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 import io.flutter.plugin.common.MethodChannel.Result
 import io.flutter.plugin.common.PluginRegistry
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
 /** FlutterPosPrinterPlatformPlugin */
 class FlutterPosPrinterPlatformPlugin : FlutterPlugin, MethodCallHandler, PluginRegistry.RequestPermissionsResultListener,
@@ -54,6 +56,9 @@ class FlutterPosPrinterPlatformPlugin : FlutterPlugin, MethodCallHandler, Plugin
     private var isScan: Boolean = false
     lateinit var adapter: USBPrinterService
     private lateinit var bluetoothService: BluetoothService
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val bluetoothSender: ExecutorService = Executors.newSingleThreadExecutor()
+    private val usbSender: ExecutorService = Executors.newSingleThreadExecutor()
 
 
     private val usbHandler = object : Handler(Looper.getMainLooper()) {
@@ -257,22 +262,11 @@ class FlutterPosPrinterPlatformPlugin : FlutterPlugin, MethodCallHandler, Plugin
             call.method.equals("sendDataByte") -> {
                 if (verifyIsBluetoothIsOn()) {
                     bluetoothService.setHandler(bluetoothHandler)
-                    val listInt: ArrayList<Int>? = call.argument("bytes")
-                    val ints = listInt!!.toIntArray()
-                    val bytes = ints.foldIndexed(ByteArray(ints.size)) { i, a, v -> a.apply { set(i, v.toByte()) } }
-                    val res = bluetoothService.sendDataByte(bytes)
-                    result.success(res)
+                    val bytes = toByteArray(call.argument("bytes"))
+                    val confirmTimeoutMs = (call.argument<Number>("confirmTimeoutMs") ?: 30000).toLong()
+                    replyFromWorker(bluetoothSender, result) { bluetoothService.sendDataByte(bytes, confirmTimeoutMs) }
                 } else {
-                    result.success(false)
-                }
-            }
-            call.method.equals("sendText") -> {
-                if (verifyIsBluetoothIsOn()) {
-                    val text: String? = call.argument("text")
-                    bluetoothService.sendData(text!!)
-                    result.success(true)
-                } else {
-                    result.success(false)
+                    result.success(PrintOutcome.failed("Bluetooth is off or the app has no Bluetooth permission"))
                 }
             }
             call.method.equals("getList") -> {
@@ -287,17 +281,11 @@ class FlutterPosPrinterPlatformPlugin : FlutterPlugin, MethodCallHandler, Plugin
             call.method.equals("close") -> {
                 closeConn(result)
             }
-            call.method.equals("printText") -> {
-                val text: String? = call.argument("text")
-                printText(text, result)
-            }
-            call.method.equals("printRawData") -> {
-                val raw: String? = call.argument("raw")
-                printRawData(raw, result)
-            }
             call.method.equals("printBytes") -> {
-                val bytes: ArrayList<Int>? = call.argument("bytes")
-                printBytes(bytes, result)
+                val bytes = toByteArray(call.argument("bytes"))
+                val statusTimeoutMs = (call.argument<Number>("statusTimeoutMs") ?: 2000).toInt()
+                adapter.setHandler(usbHandler)
+                replyFromWorker(usbSender, result) { adapter.printBytes(bytes, statusTimeoutMs) }
             }
             else -> {
                 result.notImplemented()
@@ -354,25 +342,20 @@ class FlutterPosPrinterPlatformPlugin : FlutterPlugin, MethodCallHandler, Plugin
         result.success(true)
     }
 
-    private fun printText(text: String?, result: Result) {
-        if (text.isNullOrEmpty()) return
-        adapter.setHandler(usbHandler)
-        adapter.printText(text)
-        result.success(true)
+    private fun toByteArray(values: List<Int>?): ByteArray {
+        val ints = values ?: emptyList()
+        return ByteArray(ints.size) { i -> ints[i].toByte() }
     }
 
-    private fun printRawData(base64Data: String?, result: Result) {
-        if (base64Data.isNullOrEmpty()) return
-        adapter.setHandler(usbHandler)
-        adapter.printRawData(base64Data)
-        result.success(true)
-    }
-
-    private fun printBytes(bytes: ArrayList<Int>?, result: Result) {
-        if (bytes == null) return
-        adapter.setHandler(usbHandler)
-        adapter.printBytes(bytes)
-        result.success(true)
+    private fun replyFromWorker(worker: ExecutorService, result: Result, send: () -> Map<String, Any?>) {
+        worker.execute {
+            val reply = try {
+                send()
+            } catch (e: Exception) {
+                PrintOutcome.failed("Printer plugin error: ${e.message ?: e.javaClass.simpleName}")
+            }
+            mainHandler.post { result.success(reply) }
+        }
     }
 
     private fun checkPermissions(): Boolean {

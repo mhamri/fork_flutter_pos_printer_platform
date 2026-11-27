@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:typed_data';
+import 'package:flutter/services.dart';
 
 import 'package:flutter_pos_printer_platform_image_3/discovery.dart';
 import 'package:flutter_pos_printer_platform_image_3/flutter_pos_printer_platform_image_3.dart';
@@ -176,26 +176,31 @@ class UsbPrinterConnector implements PrinterConnector<UsbPrinterInput> {
     }
   }
 
+  Duration statusTimeout = const Duration(seconds: 2);
+
+  // See README.md, "Print results".
   @override
-  Future<bool> send(List<int> bytes) async {
-    if (Platform.isAndroid)
+  Future<PrintResult> send(List<int> bytes) async {
+    if (Platform.isAndroid) {
       try {
-        // final connected = await _connect();
-        // if (!connected) return false;
-        Map<String, dynamic> params = {"bytes": bytes};
-        return await flutterPrinterChannel.invokeMethod('printBytes', params);
-      } catch (e) {
-        return false;
+        final reply = await flutterPrinterChannel.invokeMethod<Object?>('printBytes', {
+          'bytes': bytes,
+          'statusTimeoutMs': statusTimeout.inMilliseconds,
+        });
+        return printResultFromPlatformReply(reply);
+      } on PlatformException catch (error) {
+        return PrintFailed('USB send failed: ${error.message ?? error.code}');
       }
-    else if (Platform.isWindows)
+    }
+    if (Platform.isWindows) {
       try {
-        Map<String, dynamic> params = {"bytes": Uint8List.fromList(bytes)};
-        return await flutterPrinterChannel.invokeMethod('printBytes', params) == 1 ? true : false;
-      } catch (e) {
-        await this._close();
-        return false;
+        final written = await flutterPrinterChannel.invokeMethod('printBytes', {'bytes': Uint8List.fromList(bytes)});
+        return written == 1 ? const PrintConfirmed() : const PrintFailed('Windows print spooler did not take the job');
+      } on PlatformException catch (error) {
+        await _close();
+        return PrintFailed('USB send failed: ${error.message ?? error.code}');
       }
-    else
-      return false;
+    }
+    return const PrintFailed('USB printing works only on Android and Windows');
   }
 }

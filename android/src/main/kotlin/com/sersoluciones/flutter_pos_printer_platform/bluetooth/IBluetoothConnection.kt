@@ -4,6 +4,6 @@ import io.flutter.plugin.common.MethodChannel.Result
 interface IBluetoothConnection {
     fun connect(address: String, result: Result)
     fun stop()
-    fun write(out: ByteArray?)
+    fun send(bytes: ByteArray, confirmTimeoutMs: Long): Map<String, Any?>
     var state: Int
 }

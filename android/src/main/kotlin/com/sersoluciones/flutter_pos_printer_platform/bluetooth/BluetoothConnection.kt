@@ -21,11 +21,14 @@ import android.bluetooth.BluetoothSocket
 import android.os.Bundle
 import android.os.Handler
 import android.util.Log
+import com.sersoluciones.flutter_pos_printer_platform.PrintOutcome
 import com.sersoluciones.flutter_pos_printer_platform.R
 import io.flutter.plugin.common.MethodChannel
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
 
 /**
  * This class does all the work for setting up and managing Bluetooth
@@ -157,24 +160,31 @@ class BluetoothConnection constructor(handler: Handler) : IBluetoothConnection {
         state = BluetoothConstants.STATE_NONE
     }
 
-    /**
-     * Write to the ConnectedThread in an unsynchronized manner
-     *
-     * @param out The bytes to write
-     * @see ConnectedThread.write
-     */
-    override fun write(out: ByteArray?) {
-        // Create temporary object
-        var r: ConnectedThread?
-        // Synchronize a copy of the ConnectedThread
-        synchronized(this) {
-            if (mState != BluetoothConstants.STATE_CONNECTED) return
-            r = mConnectedThread
-        }
-        // Perform the write unsynchronized
-        r!!.write(out)
+    // See README.md, "Print results".
+    override fun send(bytes: ByteArray, confirmTimeoutMs: Long): Map<String, Any?> {
+        val connection = synchronized(this) {
+            if (mState == BluetoothConstants.STATE_CONNECTED) mConnectedThread else null
+        } ?: return PrintOutcome.failed("Bluetooth printer is not connected")
 
-//        Log.d(BluetoothConnection.TAG, "envia: " + new String(out));
+        try {
+            connection.writeAll(bytes)
+        } catch (e: IOException) {
+            return PrintOutcome.failed("Bluetooth printer did not take the job: ${e.message}")
+        }
+
+        connection.startListeningForStatus()
+        try {
+            connection.writeAll(PrintOutcome.OFFLINE_CAUSE_STATUS_REQUEST)
+        } catch (e: IOException) {
+            connection.stopListeningForStatus()
+            return PrintOutcome.sent(null, "Bluetooth printer took every byte, then the connection dropped: ${e.message}")
+        }
+        val status = connection.awaitStatus(confirmTimeoutMs)
+        connection.stopListeningForStatus()
+        if (status != null) return PrintOutcome.sent(status, null)
+        val reason = if (connection.isLost) "Bluetooth printer took every byte, then the connection dropped"
+        else "Bluetooth printer took every byte but did not confirm the job within ${confirmTimeoutMs / 1000} s"
+        return PrintOutcome.sent(null, reason)
     }
 
     /**
@@ -299,53 +309,62 @@ class BluetoothConnection constructor(handler: Handler) : IBluetoothConnection {
 
         private val mmInStream: InputStream? = mmSocket.inputStream
         private val mmOutStream: OutputStream? = mmSocket.outputStream
-        private val mmBuffer: ByteArray = ByteArray(1024) // mmBuffer store for the stream
+        private val mmBuffer: ByteArray = ByteArray(1024)
+        private val statusReplies = LinkedBlockingQueue<Int>()
+
+        @Volatile
+        private var listeningForStatus = false
+
+        @Volatile
+        var isLost = false
+            private set
 
         override fun run() {
-            var numBytes: Int // bytes returned from read()
-
-            // Keep listening to the InputStream while connected
             while (true) {
-
-                // Read from the InputStream.
-                numBytes = try {
-                    mmInStream?.read(mmBuffer) ?: 0
+                val numBytes = try {
+                    mmInStream?.read(mmBuffer) ?: -1
                 } catch (e: IOException) {
-//                    Log.d(TAG, "Input stream was disconnected", e)
+                    -1
+                }
+                if (numBytes < 0) {
+                    isLost = true
                     connectionLost()
                     break
                 }
-                // Send the obtained bytes to the UI Activity
-                val readMsg = mHandler.obtainMessage(BluetoothConstants.MESSAGE_READ, numBytes, -1, mmBuffer)
-                readMsg.sendToTarget()
-
+                if (listeningForStatus) {
+                    for (i in 0 until numBytes) {
+                        val value = mmBuffer[i].toInt() and 0xFF
+                        if (PrintOutcome.isOfflineCauseStatus(value)) statusReplies.offer(value)
+                    }
+                }
+                mHandler.obtainMessage(BluetoothConstants.MESSAGE_READ, numBytes, -1, mmBuffer.copyOf(numBytes)).sendToTarget()
             }
         }
 
-        /**
-         * Write to the connected OutStream.
-         *
-         * @param bytes The bytes to write
-         */
-        fun write(bytes: ByteArray?) {
-//            Log.d(TAG, "envia ConnectedThread MESSAGE_SEND_BT_CMD " + String(bytes!!))
-            try {
-                mmOutStream?.write(bytes)
-            } catch (e: IOException) {
-//                Log.e(TAG, "Exception during write", e)
-                // Send a failure message back to the activity.
-                val writeErrorMsg = mHandler.obtainMessage(BluetoothConstants.MESSAGE_TOAST)
-                val bundle = Bundle().apply {
-                    putInt(TOAST, R.string.fail_write_data)
-                }
-                writeErrorMsg.data = bundle
-                mHandler.sendMessage(writeErrorMsg)
-                return
-            }
+        @Throws(IOException::class)
+        fun writeAll(bytes: ByteArray) {
+            val out = mmOutStream ?: throw IOException("Bluetooth socket has no output stream")
+            out.write(bytes)
+            out.flush()
+        }
 
-            // Share the sent message back to the UI Activity
-            val writtenMsg = mHandler.obtainMessage(BluetoothConstants.MESSAGE_WRITE, -1, -1, mmBuffer)
-            writtenMsg.sendToTarget()
+        fun startListeningForStatus() {
+            statusReplies.clear()
+            listeningForStatus = true
+        }
+
+        fun stopListeningForStatus() {
+            listeningForStatus = false
+        }
+
+        fun awaitStatus(timeoutMs: Long): Int? {
+            val deadline = System.currentTimeMillis() + timeoutMs
+            while (!isLost) {
+                val left = deadline - System.currentTimeMillis()
+                if (left <= 0) return null
+                statusReplies.poll(minOf(left, 200L), TimeUnit.MILLISECONDS)?.let { return it }
+            }
+            return statusReplies.poll()
         }
 
         fun cancel() {

@@ -1,5 +1,7 @@
 import 'package:flutter/services.dart';
 
+import 'src/print_result.dart';
+
 final flutterPrinterChannel = const MethodChannel('com.sersoluciones.flutter_pos_printer_platform');
 final flutterPrinterEventChannelBT = const EventChannel('com.sersoluciones.flutter_pos_printer_platform/bt_state');
 final flutterPrinterEventChannelUSB = const EventChannel('com.sersoluciones.flutter_pos_printer_platform/usb_state');
@@ -22,7 +24,7 @@ abstract class BasePrinterInput {}
 
 //
 abstract class PrinterConnector<T> {
-  Future<bool> send(List<int> bytes);
+  Future<PrintResult> send(List<int> bytes);
   Future<bool> connect(T model);
   Future<bool> disconnect({int? delayMs});
 }
@@ -40,10 +42,10 @@ abstract class GenericPrinter<T> extends Printer {
 
   Future<bool> sendToConnector(List<int> Function() fn, {int? delayMs}) async {
     await connector.connect(model);
-    final resp = await connector.send(fn());
+    final result = await connector.send(fn());
     if (delayMs != null) {
       await Future.delayed(Duration(milliseconds: delayMs));
     }
-    return resp;
+    return result.reachedPrinter;
   }
 }

@@ -26,8 +26,9 @@ class BluetoothPrinterDevice {
 }
 
 class BluetoothPrinterConnector implements PrinterConnector<BluetoothPrinterInput> {
-  // ignore: unused_element
-  BluetoothPrinterConnector._({this.address = "", this.isBle = false}) {
+  BluetoothPrinterConnector._()
+      : address = "",
+        isBle = false {
     if (Platform.isAndroid)
       flutterPrinterChannel.setMethodCallHandler((MethodCall call) {
         _methodStreamController.add(call);
@@ -230,25 +231,26 @@ class BluetoothPrinterConnector implements PrinterConnector<BluetoothPrinterInpu
 
   Future<dynamic> destroy() => iosChannel.invokeMethod('destroy');
 
+  Duration confirmTimeout = const Duration(seconds: 30);
+
+  // See README.md, "Print results".
   @override
-  Future<bool> send(List<int> bytes) async {
+  Future<PrintResult> send(List<int> bytes) async {
     try {
       if (Platform.isAndroid) {
-        // final connected = await _connect();
-        // if (!connected) return false;
-        Map<String, dynamic> params = {"bytes": bytes};
-        return await flutterPrinterChannel.invokeMethod('sendDataByte', params);
+        final reply = await flutterPrinterChannel.invokeMethod<Object?>('sendDataByte', {
+          'bytes': bytes,
+          'confirmTimeoutMs': confirmTimeout.inMilliseconds,
+        });
+        return printResultFromPlatformReply(reply);
       } else if (Platform.isIOS) {
-        Map<String, Object> args = Map();
-        args['bytes'] = bytes;
-        args['length'] = bytes.length;
-        iosChannel.invokeMethod('writeData', args);
-        return Future.value(true);
+        await iosChannel.invokeMethod<Object?>('writeData', {'bytes': bytes, 'length': bytes.length});
+        return const PrintUnconfirmed('Sent over Bluetooth. iOS gives no printer confirmation.');
       } else {
-        return false;
+        return const PrintFailed('Bluetooth printing works only on Android and iOS');
       }
-    } catch (e) {
-      return false;
+    } on PlatformException catch (error) {
+      return PrintFailed('Bluetooth send failed: ${error.message ?? error.code}');
     }
   }
 
