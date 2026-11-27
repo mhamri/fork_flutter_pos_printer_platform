@@ -149,12 +149,12 @@ void main() {
     );
   });
 
-  test('a printer that hangs up while the job is still being sent fails the job', () async {
+  test('a printer that hangs up while the job is still being sent cuts the job off', () async {
     printer = await _FakePrinter.start(hangsUpOnConnect: true, busyFor: const Duration(seconds: 1));
 
     final result = await TcpPrinterConnector().print(printer.input, Uint8List(16 * 1024 * 1024));
 
-    expect(result, isA<PrintFailed>());
+    expect(result, isA<PrintCutOff>());
   });
 
   test('bytes the printer sends back on connect do not break the job', () async {
@@ -200,7 +200,7 @@ void main() {
     );
   });
 
-  test('a printer that stops reading fails at the flush time limit', () async {
+  test('a printer that stops reading cuts the job off at the flush time limit', () async {
     printer = await _FakePrinter.start(stopReading: true);
 
     final result = await TcpPrinterConnector(flushTimeout: const Duration(seconds: 1))
@@ -208,7 +208,7 @@ void main() {
 
     expect(
       result,
-      isA<PrintFailed>().having((r) => r.reason, 'reason', 'Printer 127.0.0.1:${printer.port} did not take the job within 1 s'),
+      isA<PrintCutOff>().having((r) => r.reason, 'reason', 'Printer 127.0.0.1:${printer.port} did not take the whole job within 1 s'),
     );
   });
 
@@ -231,9 +231,30 @@ void main() {
       );
     });
 
-    test('a failed reply, or a reply from an older plugin, is a failure', () {
-      expect(printResultFromPlatformReply({'outcome': 'failed', 'reason': 'cable out'}), isA<PrintFailed>());
-      expect(printResultFromPlatformReply(true), isA<PrintFailed>());
+    test('a failed reply is a failure and keeps the reason', () {
+      expect(
+        printResultFromPlatformReply({'outcome': 'failed', 'reason': 'cable out'}),
+        isA<PrintFailed>().having((r) => r.reason, 'reason', 'cable out'),
+      );
+    });
+
+    test('a cut-off reply is cut off and keeps the reason', () {
+      expect(
+        printResultFromPlatformReply({'outcome': 'cutOff', 'reason': 'stopped at byte 8192'}),
+        isA<PrintCutOff>().having((r) => r.reason, 'reason', 'stopped at byte 8192'),
+      );
+    });
+
+    test('a reply the fork does not know, such as an older plugin\'s bool, counts as cut off, never as failed', () {
+      expect(printResultFromPlatformReply(true), isA<PrintCutOff>());
+      expect(printResultFromPlatformReply({'outcome': 'later'}), isA<PrintCutOff>());
+    });
+
+    test('only confirmed and unconfirmed results sent the whole job', () {
+      expect(const PrintConfirmed().sentWholeJob, isTrue);
+      expect(const PrintUnconfirmed('no answer').sentWholeJob, isTrue);
+      expect(const PrintCutOff('stopped').sentWholeJob, isFalse);
+      expect(const PrintFailed('no link').sentWholeJob, isFalse);
     });
   });
 

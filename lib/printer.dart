@@ -8,6 +8,9 @@ final flutterPrinterEventChannelUSB = const EventChannel('com.sersoluciones.flut
 final iosChannel = const MethodChannel('flutter_pos_printer_platform/methods');
 final iosStateChannel = const EventChannel('flutter_pos_printer_platform/state');
 
+// See README.md, "Print results" (connect deadlines).
+const nativeDeadlineMargin = Duration(seconds: 5);
+
 enum BTStatus { none, connecting, connected, scanning, stopScanning }
 
 enum USBStatus { none, connecting, connected }
@@ -46,6 +49,6 @@ abstract class GenericPrinter<T> extends Printer {
     if (delayMs != null) {
       await Future.delayed(Duration(milliseconds: delayMs));
     }
-    return result.reachedPrinter;
+    return result.sentWholeJob;
   }
 }

@@ -207,12 +207,12 @@ class TcpPrinterConnector implements PrinterConnector<TcpPrinterInput> {
       socket.add(bytes);
       await socket.flush().timeout(flushTimeout);
     } on TimeoutException {
-      return PrintFailed('Printer $printer did not take the job within ${flushTimeout.inSeconds} s');
+      return PrintCutOff('Printer $printer did not take the whole job within ${flushTimeout.inSeconds} s');
     } on SocketException catch (error) {
-      return PrintFailed('Lost the connection to printer $printer while sending: ${_reason(error)}');
+      return PrintCutOff('Lost the connection to printer $printer while sending: ${_reason(error)}');
     }
     if (connection.hasEnded) {
-      return PrintFailed('Printer $printer hung up before it had the whole job');
+      return PrintCutOff('Printer $printer hung up before it had the whole job');
     }
     return _awaitConfirmation(connection, printer);
   }

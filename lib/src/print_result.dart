@@ -4,7 +4,7 @@ enum PrinterProblem { coverOpen, paperOut, error }
 sealed class PrintResult {
   const PrintResult();
 
-  bool get reachedPrinter => this is! PrintFailed;
+  bool get sentWholeJob => this is PrintConfirmed || this is PrintUnconfirmed;
 }
 
 final class PrintConfirmed extends PrintResult {
@@ -20,6 +20,15 @@ final class PrintUnconfirmed extends PrintResult {
   final String reason;
 
   const PrintUnconfirmed(this.reason);
+
+  @override
+  String toString() => reason;
+}
+
+final class PrintCutOff extends PrintResult {
+  final String reason;
+
+  const PrintCutOff(this.reason);
 
   @override
   String toString() => reason;
@@ -47,7 +56,7 @@ Set<PrinterProblem> problemsInOfflineCauseStatus(int status) => {
 };
 
 PrintResult printResultFromPlatformReply(Object? reply) {
-  if (reply is! Map) return PrintFailed('Printer plugin gave no result: $reply');
+  if (reply is! Map) return PrintCutOff('Printer plugin gave no result, so part of the job may have been sent: $reply');
   final reason = reply['reason'] as String?;
   final status = reply['status'] as int?;
   return switch (reply['outcome']) {
@@ -55,6 +64,8 @@ PrintResult printResultFromPlatformReply(Object? reply) {
     'delivered' => const PrintConfirmed(),
     'sent' when status != null => PrintConfirmed(problemsInOfflineCauseStatus(status)),
     'sent' => PrintUnconfirmed(reason ?? 'Every byte was sent, but the printer did not confirm the job'),
-    _ => PrintFailed(reason ?? 'Printer did not take the job'),
+    'cutOff' => PrintCutOff(reason ?? 'Part of the job may have reached the printer'),
+    'failed' => PrintFailed(reason ?? 'Printer did not take the job'),
+    final outcome => PrintCutOff('Printer plugin gave an unknown outcome "$outcome", so part of the job may have been sent'),
   };
 }
