@@ -119,11 +119,17 @@ SpoolerOutcome PrintManager::printBytes(const std::vector<uint8_t> &data)
                       error)};
     }
 
-    BOOL pageEnded = EndPagePrinter(_hPrinter);
-    BOOL docEnded = EndDocPrinter(_hPrinter);
-    if (!pageEnded || !docEnded)
+    if (!EndPagePrinter(_hPrinter))
     {
-        return SpoolerOutcome{"cutOff", withError("Windows print spooler took every byte but could not finish the job", GetLastError())};
+        DWORD error = GetLastError();
+        abandonJob();
+        return SpoolerOutcome{"cutOff", withError("Windows print spooler took every byte but could not end the page, so the job was cancelled", error)};
+    }
+    if (!EndDocPrinter(_hPrinter))
+    {
+        DWORD error = GetLastError();
+        abandonJob();
+        return SpoolerOutcome{"cutOff", withError("Windows print spooler took every byte but could not end the job, so the job was cancelled", error)};
     }
     return SpoolerOutcome{"sent", "Windows print spooler took every byte. The printer gives no confirmation through the spooler."};
 }
